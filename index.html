@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Luau Obfuscator</title>
+<style>
+:root{--bg:#07090d;--panel:#0f131b;--line:#252c39;--text:#eef2ff;--muted:#9099aa;--accent:#7457ff;--good:#56d7a7;--bad:#ff7285}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 20% -10%,#1b153d 0,transparent 35%),var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.app{max-width:1250px;margin:auto;padding:18px}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}.brand h1{font-size:22px;margin:0 0 4px}.brand p{margin:0;color:var(--muted);font-size:13px}.badge{font-size:12px;border:1px solid #403773;background:#161329;color:#ded8ff;padding:7px 10px;border-radius:999px}.toolbar{display:flex;gap:8px;margin-bottom:12px}.toolbar button,.actions button{border:0;border-radius:9px;padding:9px 13px;color:#fff;background:#202738;font-weight:750;cursor:pointer}.toolbar .primary{background:linear-gradient(135deg,var(--accent),#5337de)}button:hover{filter:brightness(1.12)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:rgba(15,19,27,.94);min-width:0}.head{height:45px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 12px;font-size:13px;font-weight:800}.actions{display:flex;gap:7px}.actions button{padding:6px 9px;font-size:12px}textarea{display:block;width:100%;height:58vh;min-height:390px;resize:vertical;border:0;outline:0;background:#090d13;color:#dfe5f3;padding:14px;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;tab-size:2}.status{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.pill{font-size:12px;border:1px solid var(--line);background:#101722;color:var(--muted);padding:7px 9px;border-radius:9px}.pill strong{color:var(--text)}.ok{color:var(--good)}.err{color:var(--bad)}.note{font-size:12px;color:var(--muted);line-height:1.45;margin-top:10px}@media(max-width:850px){.app{padding:11px}.grid{grid-template-columns:1fr}textarea{height:42vh;min-height:290px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top"><div class="brand"><h1>Luau Obfuscator</h1><p>Heavy VM-table style • one fixed maximum mode</p></div><div class="badge">Local-only • fresh build every run</div></div>
+  <div class="toolbar"><button class="primary" id="obfuscate">Obfuscate</button><button id="clear">Clear</button></div>
+  <div class="grid">
+    <section class="card"><div class="head"><span>Input Luau</span><div class="actions"><button id="openBtn">Open file</button></div></div><textarea id="input" spellcheck="false" placeholder='print("hello")'></textarea></section>
+    <section class="card"><div class="head"><span>Obfuscated Output</span><div class="actions"><button id="copy">Copy</button><button id="download">Download</button></div></div><textarea id="output" spellcheck="false" readonly placeholder="Output appears here..."></textarea></section>
+  </div>
+  <div class="status" id="stats"><span class="pill">Ready</span></div>
+  <div class="note">The output uses a randomized helper table, nested threshold dispatchers, four VM modes, encrypted VM bytecode, per-chunk rolling encryption, two whole-payload cipher layers, decoy helper functions/chunks, flattened runtime states, and integrity checks. It needs a runtime where <code>loadstring</code> is available.</div>
+  <input type="file" id="file" accept=".lua,.luau,.txt,text/plain" hidden>
+</div>
+<script>
+const ObfCore=(()=>{
+  const TE=new TextEncoder(),TD=new TextDecoder();
+  function hashSeed(s){let h=2166136261>>>0;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return h||1}
+  function rng(){let a=new Uint32Array(1);if(globalThis.crypto?.getRandomValues)crypto.getRandomValues(a);else a[0]=(Date.now()^Math.floor(Math.random()*0xffffffff))>>>0;let s=a[0]||0x6d2b79f5;return{seed:s>>>0,next(){s=(s+0x6D2B79F5)>>>0;let t=s;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296},int(a,b){return a+Math.floor(this.next()*(b-a+1))},pick(a){return a[Math.floor(this.next()*a.length)]},bool(){return this.next()<.5}}}
+  function shuffle(a,r){for(let i=a.length-1;i>0;i--){const j=r.int(0,i);[a[i],a[j]]=[a[j],a[i]]}return a}
+  function uniq(r,n,lo=3,hi=247){const s=new Set;while(s.size<n)s.add(r.int(lo,hi));return [...s]}
+  function ident(r,used,min=1,max=3){const first='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_',rest=first+'0123456789';for(;;){let n=r.int(min,max),s=first[r.int(0,first.length-1)];for(let i=1;i<n;i++)s+=rest[r.int(0,rest.length-1)];if(!used.has(s)&&!['and','break','do','else','elseif','end','false','for','function','if','in','local','nil','not','or','repeat','return','then','true','until','while'].includes(s)){used.add(s);return s}}}
+  function escBytes(bytes){let s='"';for(const b of bytes)s+='\\'+String(b).padStart(3,'0');return s+'"'}
+  function checksum(bytes){let h=173;for(let i=0;i<bytes.length;i++)h=(h+bytes[i]*((i%251)+3)+(i+1)*17)%65521;return h}
+  function cipherCfg(r){return{k:r.int(19,239),step:r.int(7,127),salt:r.int(11,241)}}
+  function enc(bytes,c){let st=c.salt,out=new Uint8Array(bytes.length);for(let i=0;i<bytes.length;i++){const p=bytes[i];out[i]=(p+c.k+(i+1)*c.step+st)&255;st=(st+p+c.salt+(i+1))&255}return out}
+  function dec(bytes,c){let st=c.salt,out=new Uint8Array(bytes.length);for(let i=0;i<bytes.length;i++){const p=(bytes[i]-c.k-(i+1)*c.step-st)&255;out[i]=p;st=(st+p+c.salt+(i+1))&255}return out}
+  function eq(a,b){if(a.length!==b.length)return false;for(let i=0;i<a.length;i++)if(a[i]!==b[i])return false;return true}
+  function num(n,r){const p=r.int(23,8000);return r.bool()?`(${n+p}-${p})`:`(${n-p}+${p})`}
+  function splitPayload(bytes,r){const real=[];let p=0;while(p<bytes.length){const n=Math.min(bytes.length-p,r.int(18,54)),raw=bytes.slice(p,p+n),cfg=cipherCfg(r);real.push({raw,data:enc(raw,cfg),cfg,real:true});p+=n}if(!real.length){const cfg=cipherCfg(r);real.push({raw:new Uint8Array(0),data:new Uint8Array(0),cfg,real:true})}
+    const entries=[...real];const decoys=r.int(Math.max(5,Math.floor(real.length*.8)),Math.max(10,real.length*2+6));for(let i=0;i<decoys;i++){const raw=new Uint8Array(r.int(8,44));for(let j=0;j<raw.length;j++)raw[j]=r.int(0,255);const cfg=cipherCfg(r);entries.push({raw,data:enc(raw,cfg),cfg,real:false})}
+    shuffle(entries,r);const pos=new Map;entries.forEach((e,i)=>pos.set(e,i+1));return{real,entries,order:real.map(e=>pos.get(e))}}
+  function makeVm(order,r){const modeIds=uniq(r,4,31,239),specs=[];let allOps=[];for(let m=0;m<4;m++){const ops=uniq(r,6,3,247);allOps.push(...ops);specs.push({mode:modeIds[m],emit:ops[0],junk:ops.slice(1)})}
+    const mask=r.int(1000,60000),step=r.int(31,997),modeSalt=specs.map(()=>r.int(19,877));const plain=[];let emits=0,junk=0;const add=(mode,op,arg)=>{plain.push(mode&255,op&255,arg&255,(arg>>>8)&255)};
+    order.forEach((idx,q)=>{const s=specs[q%specs.length];for(let k=0,n=r.int(3,7);k<n;k++){add(s.mode,r.pick(s.junk),r.int(0,65535));junk++}emits++;add(s.mode,s.emit,(idx+mask+emits*step+modeSalt[q%4])%65536)});
+    for(let k=0,n=r.int(14,32);k<n;k++){const s=r.pick(specs);add(s.mode,r.pick(s.junk),r.int(0,65535));junk++}
+    const cfg=cipherCfg(r),encoded=enc(new Uint8Array(plain),cfg);return{specs,mask,step,modeSalt,plain:new Uint8Array(plain),encoded,cfg,emits,junk}}
+  function verifyVm(vm,chunks){const p=dec(vm.encoded,vm.cfg),parts=[];let emits=0;for(let i=0;i<p.length;i+=4){const mode=p[i],op=p[i+1],arg=p[i+2]+p[i+3]*256;const mi=vm.specs.findIndex(x=>x.mode===mode);if(mi>=0&&op===vm.specs[mi].emit){emits++;let idx=(arg-vm.mask-emits*vm.step-vm.modeSalt[mi])%65536;if(idx<0)idx+=65536;if(idx===0)idx=65536;const e=chunks.entries[idx-1];if(!e)throw new Error('VM index self-test failed');parts.push(dec(e.data,e.cfg))}}
+    let n=parts.reduce((a,b)=>a+b.length,0),o=new Uint8Array(n),at=0;for(const q of parts){o.set(q,at);at+=q.length}let expected=0;for(const e of chunks.real)expected+=e.raw.length;if(o.length!==expected)throw new Error('VM emit self-test failed');let ebytes=new Uint8Array(expected),ep=0;for(const e of chunks.real){ebytes.set(e.raw,ep);ep+=e.raw.length}if(!eq(o,ebytes))throw new Error('VM reconstruction self-test failed');return o}
+  function tree(items,varName,defaultCode){if(items.length===1){const [v,c]=items[0];return `if ${varName}==${v} then ${c} else ${defaultCode} end`}const mid=Math.floor(items.length/2),left=items.slice(0,mid),right=items.slice(mid),th=left[left.length-1][0];return `if ${varName}<=${th} then ${tree(left,varName,defaultCode)} else ${tree(right,varName,defaultCode)} end`}
+  function randomDecoy(r,used){const name=ident(r,used,1,3),args=['k','h','p','d','Y','U','z','K','G','V','P','B'].slice(0,r.int(5,12)).join(','),q=r.pick(['h','p','Y','U','z','K','G','V','P','B'].filter(x=>args.includes(x))),a=r.int(10,320),b=a+1,c=a+2,r1=r.int(0,330),r2=r.int(0,330),r3=r.int(0,330),c1=r.int(1,251),c2=r.int(1,251);return `${name}=function(${args})if ${q}<=${a} then local x=(${q}+${c1})%256;return ${r1},x,${q} elseif ${q}<=${b} then local x=(${q}*3+${c2})%257;return ${r2},x,${q} else local x=(${q}+${c1}+${c2})%251;return ${r3},x,${q} end end`}
+  function buildModeDispatch(spec,mi,N,r){const items=[];items.push([spec.emit,`${N.ec}=${N.ec}+1;${N.idx}=(${N.arg}-${N.mask}-${N.ec}*${N.step}-${N.ms}[${mi+1}])%65536;if ${N.idx}==0 then ${N.idx}=65536 end;local ${N.ce}=${N.ch}[${N.idx}];${N.parts}[${N.ec}]=${N.ds}(${N.ce},${N.ck}[${N.idx}],${N.cs}[${N.idx}],${N.ca}[${N.idx}])`]);spec.junk.forEach((op,j)=>{const a=r.int(3,19),b=r.int(17,223);items.push([op,`${N.j}=(${N.j}*${a}+${N.arg}+${b})%65521`])});items.sort((a,b)=>a[0]-b[0]);return tree(items,N.op,`${N.j}=(${N.j}+${N.arg}+${r.int(1,97)})%65521`)}
+  function build(src,r){const source=TE.encode(src),c1=cipherCfg(r),c2=cipherCfg(r),l1=enc(source,c1),l2=enc(l1,c2),chunks=splitPayload(l2,r),vm=makeVm(chunks.order,r),rebuilt=verifyVm(vm,chunks),back1=dec(rebuilt,c2),back0=dec(back1,c1);if(!eq(back0,source))throw new Error('full payload self-test failed');
+    const used=new Set(['loadstring','string','table','error','setmetatable','local','if','then','else','elseif','end','while','do','return','for','function','true','false','nil']);const method=ident(r,used,2,3),dsName=ident(r,used,2,3);
+    const N={};for(const k of ['ch','ck','cs','ca','vm','byte','char','concat','ds','st','vmp','p','mode','op','arg','ec','idx','parts','j','ciph','l1','src','sum','fn','er','mask','step','ms','ce'])N[k]=ident(r,used,1,3);
+    const keys=uniq(r,7,11,240),[KBYTE,KCHAR,KCONCAT,KLOAD,KERR,KSET,KTYPE]=keys;
+    const chLit=chunks.entries.map(e=>escBytes(e.data)).join(','),ckLit=chunks.entries.map(e=>num(e.cfg.k,r)).join(','),csLit=chunks.entries.map(e=>num(e.cfg.step,r)).join(','),caLit=chunks.entries.map(e=>num(e.cfg.salt,r)).join(','),vmLit=escBytes(vm.encoded),msLit=vm.modeSalt.map(x=>num(x,r)).join(',');
+    const decFunc=`${dsName}=function(s,d,k,p,a)local o={},a0=a;for i=1,#d do local c=s[${KBYTE}](d,i);local b=(c-k-i*p-a0)%256;o[i]=s[${KCHAR}](b);a0=(a0+b+a+i)%256 end;return s[${KCONCAT}](o)end`;
+    const modeBranches=vm.specs.map((sp,i)=>[sp.mode,buildModeDispatch(sp,i,N,r)]).sort((a,b)=>a[0]-b[0]);const modeTree=tree(modeBranches,N.mode,`${N.j}=(${N.j}+${N.arg}+13)%65521`);
+    const states=uniq(r,13,17,327),[S0,S1,S2,S3,S4,S5,S6,S7,D1,D2,D3,D4,SD]=states;
+    const branches=[];branches.push([S0,`${N.vmp}=self.${dsName}(self,${N.vm},${num(vm.cfg.k,r)},${num(vm.cfg.step,r)},${num(vm.cfg.salt,r)});${N.ec}=0;${N.j}=0;${N.parts}={};${N.p}=1;${N.st}=${D1}`]);
+    branches.push([D1,`${N.j}=(${N.j}+${r.int(111,999)}*3)%65521;${N.st}=${S1}`]);
+    branches.push([S1,`while ${N.p}<=#${N.vmp} do ${N.mode}=self[${KBYTE}](${N.vmp},${N.p});${N.op}=self[${KBYTE}](${N.vmp},${N.p}+1);${N.arg}=self[${KBYTE}](${N.vmp},${N.p}+2)+self[${KBYTE}](${N.vmp},${N.p}+3)*256;${modeTree};${N.p}=${N.p}+4 end;${N.st}=${D2}`]);
+    branches.push([D2,`${N.j}=(${N.j}*7+${r.int(31,811)})%65521;${N.st}=${S2}`]);
+    branches.push([S2,`if ${N.ec}~=${vm.emits} then self[${KERR}]() end;${N.ciph}=self[${KCONCAT}](${N.parts});${N.st}=${S3}`]);
+    branches.push([S3,`${N.l1}=self.${dsName}(self,${N.ciph},${num(c2.k,r)},${num(c2.step,r)},${num(c2.salt,r)});${N.st}=${D3}`]);
+    branches.push([D3,`${N.j}=(${N.j}+${r.int(9,91)}*${N.ec})%65521;${N.st}=${S4}`]);
+    branches.push([S4,`${N.src}=self.${dsName}(self,${N.l1},${num(c1.k,r)},${num(c1.step,r)},${num(c1.salt,r)});${N.st}=${S5}`]);
+    branches.push([S5,`${N.sum}=173;for i=1,#${N.src} do ${N.sum}=(${N.sum}+self[${KBYTE}](${N.src},i)*(((i-1)%251)+3)+i*17)%65521 end;if ${N.sum}~=${num(checksum(source),r)} then self[${KERR}]() end;${N.st}=${D4}`]);
+    branches.push([D4,`${N.j}=(${N.j}*11+${r.int(100,900)})%65521;${N.st}=${S6}`]);
+    branches.push([S6,`${N.fn},${N.er}=self[${KLOAD}](${N.src});if not ${N.fn} then self[${KERR}](${N.er}) end;${N.st}=${SD}`]);
+    branches.push([SD,`return ${N.fn}(...)`]);
+    branches.push([S7,`${N.st}=${S6}`]);
+    const stTree=tree(branches.sort((a,b)=>a[0]-b[0]),N.st,`self[${KERR}]()`);
+    const mainMethod=`${method}=function(self)return function(...)local ${N.ch}={${chLit}};local ${N.ck}={${ckLit}};local ${N.cs}={${csLit}};local ${N.ca}={${caLit}};local ${N.vm}=${vmLit};local ${N.mask}=${num(vm.mask,r)},${N.step}=${num(vm.step,r)},${N.ms}={${msLit}};local ${N.ds}=function(d,k,p,a)return self.${dsName}(self,d,k,p,a) end;local ${N.st}=${S0};local ${N.vmp},${N.p},${N.mode},${N.op},${N.arg},${N.ec},${N.idx},${N.parts},${N.j},${N.ciph},${N.l1},${N.src},${N.sum},${N.fn},${N.er};while true do ${stTree} end end end`;
+    const decoys=[];for(let i=0;i<96;i++)decoys.push(randomDecoy(r,used));shuffle(decoys,r);
+    const builtin=[`[${KBYTE}]=string.byte`,`[${KCHAR}]=string.char`,`[${KCONCAT}]=table.concat`,`[${KLOAD}]=loadstring`,`[${KERR}]=error`,`[${KSET}]=setmetatable`,`[${KTYPE}]=type`];
+    const entries=[...decoys,decFunc,mainMethod,...builtin];shuffle(entries,r);
+    const code=`return setmetatable({${entries.join(',')}},{}):${method}()(...);`;
+    return{code,stats:{sourceBytes:source.length,totalBytes:TE.encode(code).length,helpers:decoys.length+2,realChunks:chunks.real.length,totalChunks:chunks.entries.length,vmInstructions:vm.plain.length/4,junkInstructions:vm.junk,checksum:checksum(source),seed:r.seed}}}
+  function obfuscate(src){if(!src||!src.trim())throw new Error('Paste or open a Luau script first.');src=src.replace(/[“”]/g,'\"').replace(/[‘’]/g,"'");const r=rng();return build(src,r)}
+  return{obfuscate,enc,dec,cipherCfg,checksum};
+})();
+
+const $=id=>document.getElementById(id),input=$('input'),output=$('output'),stats=$('stats');
+const esc=s=>String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+const size=n=>n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(2)+' MB';
+function run(){try{const r=ObfCore.obfuscate(input.value);output.value=r.code;stats.innerHTML=`<span class="pill ok">Round-trip self-test passed</span><span class="pill">Helpers <strong>${r.stats.helpers}</strong></span><span class="pill">VM instructions <strong>${r.stats.vmInstructions}</strong></span><span class="pill">Junk <strong>${r.stats.junkInstructions}</strong></span><span class="pill">Chunks <strong>${r.stats.realChunks}/${r.stats.totalChunks}</strong></span><span class="pill">Size <strong>${size(r.stats.sourceBytes)} → ${size(r.stats.totalBytes)}</strong></span><span class="pill">Seed <strong>${r.stats.seed}</strong></span>`}catch(e){stats.innerHTML=`<span class="pill err">${esc(e.message||e)}</span>`}}
+$('obfuscate').onclick=run;$('clear').onclick=()=>{input.value='';output.value='';stats.innerHTML='<span class="pill">Ready</span>'};$('openBtn').onclick=()=>$('file').click();$('file').onchange=async e=>{const f=e.target.files[0];if(f)input.value=await f.text();e.target.value=''};$('copy').onclick=async()=>{if(!output.value)return;try{await navigator.clipboard.writeText(output.value);$('copy').textContent='Copied';setTimeout(()=>$('copy').textContent='Copy',900)}catch{output.select();document.execCommand('copy')}};$('download').onclick=()=>{if(!output.value)return;const b=new Blob([output.value],{type:'text/plain;charset=utf-8'}),u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='obfuscated.luau';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)};input.addEventListener('keydown',e=>{if(e.key==='Tab'){e.preventDefault();const s=input.selectionStart,t=input.selectionEnd;input.value=input.value.slice(0,s)+'  '+input.value.slice(t);input.selectionStart=input.selectionEnd=s+2}});
+</script>
+</body>
+</html>
