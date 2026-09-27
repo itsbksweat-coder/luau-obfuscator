@@ -54,7 +54,7 @@ const ObfCore=(()=>{
     const N={};for(const k of ['ch','ck','cs','ca','vm','byte','char','concat','ds','st','vmp','p','mode','op','arg','ec','idx','parts','j','ciph','l1','src','sum','fn','er','mask','step','ms','ce'])N[k]=ident(r,used,1,3);
     const keys=uniq(r,7,11,240),[KBYTE,KCHAR,KCONCAT,KLOAD,KERR,KSET,KTYPE]=keys;
     const chLit=chunks.entries.map(e=>escBytes(e.data)).join(','),ckLit=chunks.entries.map(e=>num(e.cfg.k,r)).join(','),csLit=chunks.entries.map(e=>num(e.cfg.step,r)).join(','),caLit=chunks.entries.map(e=>num(e.cfg.salt,r)).join(','),vmLit=escBytes(vm.encoded),msLit=vm.modeSalt.map(x=>num(x,r)).join(',');
-    const decFunc=`${dsName}=function(s,d,k,p,a)local o={},a0=a;for i=1,#d do local c=s[${KBYTE}](d,i);local b=(c-k-i*p-a0)%256;o[i]=s[${KCHAR}](b);a0=(a0+b+a+i)%256 end;return s[${KCONCAT}](o)end`;
+    const decFunc=`${dsName}=function(s,d,k,p,a)local o,a0={},a;for i=1,#d do local c=s[${KBYTE}](d,i);local b=(c-k-i*p-a0)%256;o[i]=s[${KCHAR}](b);a0=(a0+b+a+i)%256 end;return s[${KCONCAT}](o)end`;
     const modeBranches=vm.specs.map((sp,i)=>[sp.mode,buildModeDispatch(sp,i,N,r)]).sort((a,b)=>a[0]-b[0]);const modeTree=tree(modeBranches,N.mode,`${N.j}=(${N.j}+${N.arg}+13)%65521`);
     const states=uniq(r,13,17,327),[S0,S1,S2,S3,S4,S5,S6,S7,D1,D2,D3,D4,SD]=states;
     const branches=[];branches.push([S0,`${N.vmp}=self.${dsName}(self,${N.vm},${num(vm.cfg.k,r)},${num(vm.cfg.step,r)},${num(vm.cfg.salt,r)});${N.ec}=0;${N.j}=0;${N.parts}={};${N.p}=1;${N.st}=${D1}`]);
@@ -71,11 +71,11 @@ const ObfCore=(()=>{
     branches.push([SD,`return ${N.fn}(...)`]);
     branches.push([S7,`${N.st}=${S6}`]);
     const stTree=tree(branches.sort((a,b)=>a[0]-b[0]),N.st,`self[${KERR}]()`);
-    const mainMethod=`${method}=function(self)return function(...)local ${N.ch}={${chLit}};local ${N.ck}={${ckLit}};local ${N.cs}={${csLit}};local ${N.ca}={${caLit}};local ${N.vm}=${vmLit};local ${N.mask}=${num(vm.mask,r)},${N.step}=${num(vm.step,r)},${N.ms}={${msLit}};local ${N.ds}=function(d,k,p,a)return self.${dsName}(self,d,k,p,a) end;local ${N.st}=${S0};local ${N.vmp},${N.p},${N.mode},${N.op},${N.arg},${N.ec},${N.idx},${N.parts},${N.j},${N.ciph},${N.l1},${N.src},${N.sum},${N.fn},${N.er};while true do ${stTree} end end end`;
+    const mainMethod=`${method}=function(self)return function(...)local ${N.ch}={${chLit}};local ${N.ck}={${ckLit}};local ${N.cs}={${csLit}};local ${N.ca}={${caLit}};local ${N.vm}=${vmLit};local ${N.mask},${N.step},${N.ms}=${num(vm.mask,r)},${num(vm.step,r)},{${msLit}};local ${N.ds}=function(d,k,p,a)return self.${dsName}(self,d,k,p,a) end;local ${N.st}=${S0};local ${N.vmp},${N.p},${N.mode},${N.op},${N.arg},${N.ec},${N.idx},${N.parts},${N.j},${N.ciph},${N.l1},${N.src},${N.sum},${N.fn},${N.er};while true do ${stTree} end end end`;
     const decoys=[];for(let i=0;i<96;i++)decoys.push(randomDecoy(r,used));shuffle(decoys,r);
     const builtin=[`[${KBYTE}]=string.byte`,`[${KCHAR}]=string.char`,`[${KCONCAT}]=table.concat`,`[${KLOAD}]=loadstring`,`[${KERR}]=error`,`[${KSET}]=setmetatable`,`[${KTYPE}]=type`];
     const entries=[...decoys,decFunc,mainMethod,...builtin];shuffle(entries,r);
-    const code=`return setmetatable({${entries.join(',')}},{}):${method}()(...);`;
+    const code=`return (setmetatable({${entries.join(',')}},{}):${method}())(...);`;
     return{code,stats:{sourceBytes:source.length,totalBytes:TE.encode(code).length,helpers:decoys.length+2,realChunks:chunks.real.length,totalChunks:chunks.entries.length,vmInstructions:vm.plain.length/4,junkInstructions:vm.junk,checksum:checksum(source),seed:r.seed}}}
   function obfuscate(src){if(!src||!src.trim())throw new Error('Paste or open a Luau script first.');src=src.replace(/[“”]/g,'\"').replace(/[‘’]/g,"'");const r=rng();return build(src,r)}
   return{obfuscate,enc,dec,cipherCfg,checksum};
