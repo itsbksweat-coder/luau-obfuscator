@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>VM Lua Obfuscator</title>
+<style>
+:root{
+  --bg:#070707;
+  --panel:#101010;
+  --panel2:#151515;
+  --line:#262626;
+  --text:#f5f5f5;
+  --muted:#9a9a9a;
+  --accent:#ffffff;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  min-height:100vh;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+.wrap{
+  width:min(1200px,94vw);
+  margin:28px auto;
+}
+.top{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  margin-bottom:16px;
+}
+.brand h1{
+  font-size:22px;
+  margin:0;
+  letter-spacing:.2px;
+}
+.brand p{
+  margin:4px 0 0;
+  color:var(--muted);
+  font-size:13px;
+}
+.badge{
+  border:1px solid var(--line);
+  background:#0c0c0c;
+  padding:8px 11px;
+  border-radius:10px;
+  color:#cfcfcf;
+  font-size:12px;
+}
+.grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+}
+.card{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:14px;
+  overflow:hidden;
+}
+.cardhead{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:12px 14px;
+  border-bottom:1px solid var(--line);
+  background:#0d0d0d;
+}
+.cardhead strong{font-size:13px}
+textarea{
+  width:100%;
+  min-height:520px;
+  resize:vertical;
+  border:0;
+  outline:0;
+  background:var(--panel);
+  color:#ededed;
+  padding:16px;
+  font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.controls{
+  display:flex;
+  flex-wrap:wrap;
+  gap:9px;
+  margin:14px 0;
+  align-items:center;
+}
+button,select,input{
+  border:1px solid var(--line);
+  background:var(--panel2);
+  color:var(--text);
+  border-radius:10px;
+  padding:10px 12px;
+}
+button{
+  cursor:pointer;
+  font-weight:600;
+}
+button.primary{
+  background:#fff;
+  color:#000;
+  border-color:#fff;
+}
+button:hover{filter:brightness(1.12)}
+label{
+  color:#c7c7c7;
+  font-size:12px;
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+.status{
+  margin-left:auto;
+  color:var(--muted);
+  font-size:12px;
+}
+.small{
+  padding:7px 9px;
+  font-size:12px;
+}
+.footer{
+  margin-top:12px;
+  color:#737373;
+  font-size:11px;
+}
+@media(max-width:850px){
+  .grid{grid-template-columns:1fr}
+  textarea{min-height:340px}
+  .status{width:100%;margin-left:0}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <h1>VM Lua/Luau Obfuscator</h1>
+      <p>Client-side obfuscator + generated runtime VM.</p>
+    </div>
+    <div class="badge">No server upload</div>
+  </div>
+
+  <div class="controls">
+    <button class="primary" id="obfuscateBtn">Obfuscate</button>
+    <button id="copyBtn">Copy Output</button>
+    <button id="downloadBtn">Download .lua</button>
+
+    <label>Layers
+      <select id="layers">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+      </select>
+    </label>
+
+    <label>
+      <input type="checkbox" id="watermark" checked />
+      Watermark
+    </label>
+
+    <div class="status" id="status">Ready</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="cardhead">
+        <strong>Input Lua / Luau</strong>
+        <button class="small" id="clearBtn">Clear</button>
+      </div>
+      <textarea id="input" spellcheck="false" placeholder='print("hello")'></textarea>
+    </div>
+
+    <div class="card">
+      <div class="cardhead">
+        <strong>VM Obfuscated Output</strong>
+        <span id="sizeInfo" style="font-size:11px;color:#777">0 bytes</span>
+      </div>
+      <textarea id="output" spellcheck="false" readonly></textarea>
+    </div>
+  </div>
+
+  <div class="footer">
+    Generated output expects Luau/Lua with <code>loadstring</code> and <code>bit32</code>.
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+const $ = id => document.getElementById(id);
+
+function randInt(min,max){
+  return Math.floor(Math.random()*(max-min+1))+min;
+}
+function randU32(){
+  return (Math.floor(Math.random()*0x100000000) >>> 0) || 0xA341316C;
+}
+function randName(used){
+  const first="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+  const rest=first+"0123456789";
+  let s;
+  do{
+    const n=randInt(7,15);
+    s=first[randInt(0,first.length-1)];
+    for(let i=1;i<n;i++) s+=rest[randInt(0,rest.length-1)];
+  }while(used.has(s));
+  used.add(s);
+  return s;
+}
+function xs32(v){
+  v >>>= 0;
+  v ^= (v << 13) >>> 0;
+  v ^= v >>> 17;
+  v ^= (v << 5) >>> 0;
+  return v >>> 0;
+}
+function utf8Encode(s){
+  return new TextEncoder().encode(s);
+}
+function adler32(bytes){
+  let a=1,b=0;
+  for(const x of bytes){
+    a=(a+x)%65521;
+    b=(b+a)%65521;
+  }
+  return (((b<<16)>>>0)|a)>>>0;
+}
+function encrypt(bytes, seed, salt){
+  let state=seed>>>0;
+  const out=new Uint8Array(bytes.length);
+  for(let i=0;i<bytes.length;i++){
+    state=xs32(state);
+    const key=(state >>> ((i&3)*8)) & 255;
+    const pos=(i*29+salt)&255;
+    out[i]=bytes[i]^key^pos;
+  }
+  return out;
+}
+function pack(cipher, seed){
+  const count=Math.ceil(cipher.length/4);
+  const words=[];
+  let state=seed>>>0;
+  for(let i=0;i<count;i++){
+    const p=i*4;
+    const raw=(
+      (cipher[p]||0) |
+      ((cipher[p+1]||0)<<8) |
+      ((cipher[p+2]||0)<<16) |
+      ((cipher[p+3]||0)<<24)
+    )>>>0;
+    state=xs32(state);
+    words.push((raw^state)>>>0);
+  }
+  return words;
+}
+function uniqueNums(count,min,max){
+  const s=new Set();
+  while(s.size<count) s.add(randInt(min,max));
+  return [...s];
+}
+function chunkArray(arr){
+  let i=0, lines=[];
+  while(i<arr.length){
+    const take=randInt(9,16);
+    lines.push("        "+arr.slice(i,i+take).join(","));
+    i+=take;
+  }
+  return lines.join(",\n");
+}
+function escLua(s){
+  return '"'+s.replace(/\\/g,"\\\\").replace(/"/g,'\\"').replace(/\n/g,"\\n").replace(/\r/g,"\\r")+'"';
+}
+
+function makeLayer(source, layerNo, addWatermark){
+  const bytes=utf8Encode(source);
+  const streamSeed=randU32();
+  const wordSeed=randU32();
+  const salt=randInt(1,255);
+  const checksum=adler32(bytes);
+  const cipher=encrypt(bytes,streamSeed,salt);
+  const words=pack(cipher,wordSeed);
+
+  const used=new Set();
+  const names=Array.from({length:24},()=>randName(used));
+  const [
+    T,P,VM,XS,S,WS,OUT,PC,WI,BI,W,BYTE,KEY,SHIFT,SRC,FN,ERR,A,B,I,J,ARG,RET
+  ]=names;
+
+  const H=uniqueNums(10,20,240);
+  const [HBX,HBA,HR,HL,HC,HCON,HLOAD,HERR,HUNPACK,HSELECT]=H;
+
+  const ST=uniqueNums(7,300,32000);
+  const [INIT,READWORD,READBYTE,CHECK,EXEC,DONE,TRAP]=ST;
+
+  const junk1=randInt(10000,900000);
+  const junk2=randInt(10000,900000);
+
+  const wm=addWatermark ? "-- VM Obfuscated\n" : "";
+
+  return `${wm}return (function(...)
+    local ${T}={
+        [${HBX}]=bit32.bxor,
+        [${HBA}]=bit32.band,
+        [${HR}]=bit32.rshift,
+        [${HL}]=bit32.lshift,
+        [${HC}]=string.char,
+        [${HCON}]=table.concat,
+        [${HLOAD}]=loadstring,
+        [${HERR}]=error,
+        [${HUNPACK}]=table.unpack or unpack,
+        [${HSELECT}]=select
+    }
+
+    local ${P}={
+${chunkArray(words)}
+    }
+
+    local function ${XS}(${S})
+        ${S}=${T}[${HBX}](${S},${T}[${HL}](${S},13))
+        ${S}=${T}[${HBX}](${S},${T}[${HR}](${S},17))
+        ${S}=${T}[${HBX}](${S},${T}[${HL}](${S},5))
+        return ${T}[${HBA}](${S},4294967295)
+    end
+
+    local function ${J}(${ARG})
+        local ${RET}=${T}[${HBX}](${ARG},${ARG})
+        if ${RET}~=(0+(${junk1}-${junk1})) then
+            ${T}[${HERR}]("vm trap",0)
+        end
+        return (${junk2}-${junk2})+1
+    end
+
+    local function ${VM}(...)
+        local ${PC}=${INIT}
+        local ${S}=${streamSeed}
+        local ${WS}=${wordSeed}
+        local ${OUT}={}
+        local ${WI}=1
+        local ${BI}=0
+        local ${W}=0
+        local ${I}=0
+        local ${A}=1
+        local ${B}=0
+
+        while true do
+            if ${PC}==${INIT} then
+                if ${J}(${S})==1 then
+                    ${PC}=${READWORD}
+                else
+                    ${PC}=${TRAP}
+                end
+
+            elseif ${PC}==${READWORD} then
+                if ${WI}>#${P} then
+                    ${PC}=${CHECK}
+                else
+                    ${WS}=${XS}(${WS})
+                    ${W}=${T}[${HBX}](${P}[${WI}],${WS})
+                    ${I}=0
+                    ${PC}=${READBYTE}
+                end
+
+            elseif ${PC}==${READBYTE} then
+                if ${I}>=4 then
+                    ${WI}=${WI}+1
+                    ${PC}=${READWORD}
+                elseif ${BI}>=${bytes.length} then
+                    ${PC}=${CHECK}
+                else
+                    local ${SHIFT}=${I}*8
+                    local ${BYTE}=${T}[${HBA}](${T}[${HR}](${W},${SHIFT}),255)
+
+                    ${S}=${XS}(${S})
+                    local ${KEY}=${T}[${HBA}](
+                        ${T}[${HR}](${S},(${BI}%4)*8),
+                        255
+                    )
+
+                    ${BYTE}=${T}[${HBX}](
+                        ${T}[${HBX}](${BYTE},${KEY}),
+                        ${T}[${HBA}](${BI}*29+${salt},255)
+                    )
+
+                    ${BI}=${BI}+1
+                    ${OUT}[${BI}]=${T}[${HC}](${BYTE})
+
+                    ${A}=(${A}+${BYTE})%65521
+                    ${B}=(${B}+${A})%65521
+
+                    ${I}=${I}+1
+                end
+
+            elseif ${PC}==${CHECK} then
+                if (${B}*65536+${A})~=${checksum} then
+                    ${T}[${HERR}]("integrity check failed",0)
+                end
+                ${PC}=${EXEC}
+
+            elseif ${PC}==${EXEC} then
+                local ${SRC}=${T}[${HCON}](${OUT})
+                local ${FN},${ERR}=${T}[${HLOAD}](${SRC},"@VM:${layerNo}")
+                if not ${FN} then
+                    ${T}[${HERR}](${ERR},0)
+                end
+                ${PC}=${DONE}
+                return ${FN}(...)
+
+            elseif ${PC}==${DONE} then
+                return
+            else
+                ${T}[${HERR}]("invalid vm opcode",0)
+            end
+        end
+    end
+
+    return ${VM}(...)
+end)(...)`;
+}
+
+function obfuscate(source,layers,watermark){
+  let out=source;
+  for(let i=1;i<=layers;i++){
+    out=makeLayer(out,i,watermark && i===layers);
+  }
+  return out;
+}
+
+function updateSize(){
+  const text=$("output").value;
+  $("sizeInfo").textContent=new Blob([text]).size.toLocaleString()+" bytes";
+}
+
+$("obfuscateBtn").addEventListener("click",()=>{
+  const src=$("input").value;
+  if(!src.trim()){
+    $("status").textContent="Paste Lua/Luau first";
+    return;
+  }
+  try{
+    $("status").textContent="Obfuscating...";
+    const layers=Number($("layers").value)||1;
+    const out=obfuscate(src,layers,$("watermark").checked);
+    $("output").value=out;
+    updateSize();
+    $("status").textContent="Done";
+  }catch(e){
+    $("status").textContent="Error: "+e.message;
+  }
+});
+
+$("copyBtn").addEventListener("click",async()=>{
+  const text=$("output").value;
+  if(!text) return;
+  try{
+    await navigator.clipboard.writeText(text);
+    $("status").textContent="Copied";
+  }catch{
+    $("output").select();
+    document.execCommand("copy");
+    $("status").textContent="Copied";
+  }
+});
+
+$("downloadBtn").addEventListener("click",()=>{
+  const text=$("output").value;
+  if(!text) return;
+  const blob=new Blob([text],{type:"text/plain"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download="obfuscated.lua";
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+$("clearBtn").addEventListener("click",()=>{
+  $("input").value="";
+  $("output").value="";
+  updateSize();
+  $("status").textContent="Ready";
+});
+
+$("input").value='print("hello from vm")';
+})();
+</script>
+</body>
+</html>
